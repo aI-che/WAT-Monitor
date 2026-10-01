@@ -1,0 +1,539 @@
+{
+  "name": "Web Page Change Monitor",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "id": "d0c60e83-aa9c-4449-b724-dd3707233d72",
+      "name": "Every 6 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        -2400,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "wat_page_hashes",
+          "mode": "name"
+        },
+        "returnAll": true
+      },
+      "id": "c818c650-690d-44ca-bcd5-211db5bd3776",
+      "name": "Get Stored Hashes",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        -1584,
+        320
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const URLS = [\n  'https://j1visa.state.gov/programs/summer-work-travel/',\n  'https://j1visa.state.gov/summer-work-travel-resource-page/',\n  'https://travel.state.gov/content/travel/en/us-visas/study/exchange.html',\n  'https://j1visa.state.gov/participants/how-to-apply/sponsor-search/',\n  'https://www.armadagrandee.com/work-and-travel/basvuru-sartlari',\n  'https://compassabroad.com.tr/work-and-travel',\n  'https://frontedu.com.tr/work-and-travel-2027/',\n  'https://edufix.com.tr/work-and-travel-basvuru-tarihleri/',\n  'https://www.success.com.tr/work-and-travel',\n  'https://edex.com.tr/',\n  'https://www.oxfordhousewat.com/',\n  'https://campusedu.com.tr/work-and-travel/',\n  'https://www.elt.com.tr/workandtravel',\n  'https://westline.com.tr/work-and-travel/',\n  'https://edumaster.com.tr/',\n];\nconst rows = $input.all().map(i => i.json).filter(r => r && r.page_url);\nconst map = {};\nfor (const r of rows) {\n  map[String(r.page_url)] = {\n    hash: r.content_hash ? String(r.content_hash) : '',\n    text: r.content_text ? String(r.content_text) : '',\n  };\n}\nreturn URLS.map(u => ({ json: {\n  url: u,\n  previous_hash: (map[u] && map[u].hash) || '',\n  previous_text: (map[u] && map[u].text) || '',\n} }));"
+      },
+      "id": "8e39aa18-ab0a-4521-8162-ea0d10e25b28",
+      "name": "Prepare URLs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2048,
+        544
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "399df626-b0d1-4387-9030-e3c81c848206",
+      "name": "Fetch Page",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        -2048,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const url = $('Prepare URLs').item.json.url;\nconst prev = $('Prepare URLs').item.json.previous_hash || '';\nconst prevText = $('Prepare URLs').item.json.previous_text || '';\nlet html = String($json.data || '');\n\n// Remove non-content markup blocks\nhtml = html.replace(/<script[\\s\\S]*?<\\/script>/gi, ' ');\nhtml = html.replace(/<style[\\s\\S]*?<\\/style>/gi, ' ');\nhtml = html.replace(/<noscript[\\s\\S]*?<\\/noscript>/gi, ' ');\nhtml = html.replace(/<!--[\\s\\S]*?-->/g, ' ');\n\n// Turn block-level boundaries into line breaks\nhtml = html.replace(/<br\\s*\\/?>/gi, '\\n');\nhtml = html.replace(/<\\/(p|div|li|h[1-6]|section|article|header|footer|nav|tr|ul|ol|table|thead|tbody)>/gi, '\\n');\n\n// Strip remaining tags\nlet raw = html.replace(/<[^>]+>/g, ' ');\n\n// Decode common HTML entities\nraw = raw\n  .replace(/&nbsp;/gi, ' ')\n  .replace(/&amp;/gi, '&')\n  .replace(/&lt;/gi, '<')\n  .replace(/&gt;/gi, '>')\n  .replace(/&quot;/gi, '\"')\n  .replace(/&#39;/gi, \"'\");\n\n// Normalize visible-text lines\nlet lines = raw.split(/\\n+/)\n  .map(l => l.replace(/\\s+/g, ' ').trim())\n  .filter(l => l.length > 0);\n\n// Remove known dynamic/non-content noise\nlines = lines.filter(line => {\n  if (/Cloudflare Ray ID\\s*:/i.test(line)) return false;\n  if (/Ray ID\\s*:/i.test(line)) return false;\n  return true;\n});\n\nconst newText = lines.join('\\n');\n\n// djb2 hash\nfunction makeHash(text) {\n  let h = 5381;\n  for (let i = 0; i < text.length; i++) {\n    h = ((h << 5) + h + text.charCodeAt(i)) >>> 0;\n  }\n  return String(h) + ':' + String(text.length);\n}\n\nconst contentHash = makeHash(newText);\n\nconst fetchFailed = newText.length === 0;\nconst isFirst = prev === '';\n\nconst effectiveHash = (fetchFailed && prev) ? prev : contentHash;\nconst effectiveText = (fetchFailed && prevText) ? prevText : newText;\n\n// Normalize previous saved text too.\n// This prevents old Cloudflare Ray IDs from causing a false change\n// after this filter is introduced.\nconst previousLines = prevText\n  ? prevText.split('\\n')\n      .map(l => l.replace(/\\s+/g, ' ').trim())\n      .filter(l => l.length > 0)\n      .filter(line => !/Cloudflare Ray ID\\s*:/i.test(line))\n      .filter(line => !/Ray ID\\s*:/i.test(line))\n  : [];\n\nconst normalizedPrevText = previousLines.join('\\n');\n\n// If previous text exists, compare normalized previous content.\n// This makes the new filter compatible with old saved data.\nconst comparisonPrevHash = prevText\n  ? makeHash(normalizedPrevText)\n  : prev;\n\nconst changed = !fetchFailed && !isFirst && comparisonPrevHash !== contentHash;\n\n// Compute changed visible text\nconst prevLines = normalizedPrevText ? normalizedPrevText.split('\\n') : [];\nconst prevSet = new Set(prevLines);\nconst newSet = new Set(lines);\n\nconst added = lines.filter(l => !prevSet.has(l));\nconst removed = prevLines.filter(l => !newSet.has(l));\n\nlet diffParts = [];\n\nif (added.length) {\n  diffParts.push('ADDED / CHANGED:\\n' + added.join('\\n'));\n}\n\nif (removed.length) {\n  diffParts.push('REMOVED:\\n' + removed.join('\\n'));\n}\n\nlet changedText = diffParts.join('\\n\\n');\n\nif (changedText.length > 8000) {\n  changedText = changedText.slice(0, 8000);\n}\n\nreturn {\n  json: {\n    page_url: url,\n    content_hash: effectiveHash,\n    content_text: effectiveText,\n    previous_hash: prev,\n    changed: changed,\n    is_first: isFirst,\n    fetch_failed: fetchFailed,\n    changed_text: changedText,\n    checked_at: new Date().toISOString(),\n  }\n};"
+      },
+      "id": "1c57c0b6-0b7a-4e4d-9cef-28fdeaa87e99",
+      "name": "Extract & Compare",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1600,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "wat_page_hashes"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "page_url",
+              "keyValue": "={{ $json.page_url }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "page_url": "={{ $json.page_url }}",
+            "content_hash": "={{ $json.content_hash }}",
+            "content_text": "={{ $json.content_text }}",
+            "last_checked": "={{ $json.checked_at }}"
+          },
+          "matchingColumns": [
+            "page_url"
+          ],
+          "schema": [
+            {
+              "id": "page_url",
+              "displayName": "page_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "content_hash",
+              "displayName": "content_hash",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "last_checked",
+              "displayName": "last_checked",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "content_text",
+              "displayName": "content_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "3328f192-429d-4d41-a31f-1f348ef5056c",
+      "name": "Save Hash",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        -1392,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "changed",
+              "leftValue": "={{ $('Extract & Compare').item.json.changed }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "23d8e1eb-fcdc-4032-b103-60e7efabba13",
+      "name": "Changed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1168,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const ctx = $('Extract & Compare').item.json;\n\n// ---------------------------------------------------------\n// SYSTEM PROMPT\n// ---------------------------------------------------------\n\nconst system = [\n  'You are a web page change monitor for the Summer Work Travel (SWT) program.',\n  'Your main focus is the upcoming 2027 Summer Work Travel season.',\n\n  'You receive two kinds of information:',\n  '1) CHANGED VISIBLE TEXT: text that was added, changed, or removed.',\n  '2) CURRENT PAGE TEXT: the current visible text of the webpage.',\n  'Use BOTH sources when determining relevance and extracting information.',\n\n  'Determine whether the detected change is relevant to the upcoming 2027 Summer Work Travel season.',\n\n  'Do NOT require the number 2027 to appear in the changed text.',\n  'A change can be relevant when the webpage context clearly indicates that it concerns the upcoming SWT season.',\n  'The season may be written as 2027, 2026-2027, or may be implied by the current program context.',\n\n  'Use the source URL, page context, changed text, current page text, program periods, application periods, and registration information together.',\n  'If the season cannot be determined reliably, use season \"unknown\" and confidence \"low\".',\n\n  'Relevant changes include:',\n  'application opening dates, application deadlines, registration status, early registration, early registration deadlines, program dates, eligibility, sponsor or participant rules, fees, visa information, DS-2019 information, job placement information, SWT policy changes, and important SWT announcements.',\n\n  'Ignore:',\n  'navigation, menus, cookie banners, consent banners, Cloudflare Ray IDs, security IDs, legal/privacy/terms text, footer text, timestamps, counters, tracking IDs, unrelated testimonials, unrelated names, and purely cosmetic changes.',\n\n  'Infer the company or organization name from the source URL and page content when possible.',\n  'For official U.S. government pages, use names such as BridgeUSA or U.S. Department of State.',\n\n  'IMPORTANT DATE RULES:',\n  'A date field may contain ONLY an actual date.',\n  'Never put a sentence, phrase, status, description, or event name into a date field.',\n  'For example, \"Erken kayıt dönemi başladı\" is NOT a date.',\n  'For example, \"Başvurular başladı\" is NOT a date.',\n  'For example, \"Ücretsiz online görüşme planla\" is NOT a date.',\n  'If no actual date is explicitly present, use null.',\n\n  'Actual dates can appear in formats such as:',\n  '2027-05-01, 2027-09-30, 01.10.2026, 1 Ekim, 1 Ekim 2026, October 1, October 1 2026, 01/10/2026.',\n\n  'If a date is present in the CURRENT PAGE TEXT but not in the CHANGED VISIBLE TEXT, you may use it when it clearly describes the changed SWT information.',\n  'Do not invent dates.',\n  'Do not convert a vague phrase into a date.',\n  'Do not assume that an early-registration deadline is the same as the general application deadline.',\n  'Do not assume that an application opening date is the same as a program start date.',\n  'Do not assume that a registration deadline is the same as a program end date.',\n\n  'If the page says that early registration has started and separately gives an early registration deadline, classify the event according to the actual information.',\n  'If the page gives a date for early registration, preserve that date and do not label it as the program start date.',\n  'If the page gives only \"early registration has started\" without a date, application_start may be null.',\n\n  'dates_mentioned must contain ONLY actual dates that appear explicitly in the available page information.',\n  'Do not put descriptions such as \"erken kayıt dönemi başladı\" into dates_mentioned.',\n\n  'The summary MUST be written in Turkish.',\n  'The title should be concise and descriptive.',\n  'The company field should contain the organization/company name when it can be determined.',\n\n  'Respond with ONLY one valid JSON object.',\n  'Do not include markdown.',\n  'Do not include explanations outside the JSON object.',\n\n  'The JSON object MUST contain exactly these keys:',\n  'relevant, season, confidence, company, event_type, application_status, application_start, application_deadline, program_start, program_end, title, summary, dates_mentioned, source_url, importance.',\n\n  'season must be one of: \"2027\", \"2026-2027\", \"2026\", \"unknown\".',\n\n  'confidence must be one of: \"high\", \"medium\", \"low\".',\n\n  'event_type must be one of:',\n  'application_open, application_deadline, application_status, program_dates, ds2019, visa, eligibility, sponsor, fee_change, job_placement, policy_change, announcement, other.',\n\n  'application_status must be one of:',\n  'open, upcoming, closed, unknown.',\n\n  'importance must be one of:',\n  'high, medium, low.',\n\n  'For irrelevant changes:',\n  'relevant must be false,',\n  'season must be \"unknown\",',\n  'confidence must be \"low\",',\n  'company must be \"\",',\n  'event_type must be \"other\",',\n  'application_status must be \"unknown\",',\n  'application_start must be null,',\n  'application_deadline must be null,',\n  'program_start must be null,',\n  'program_end must be null,',\n  'title must be \"\",',\n  'summary must be \"\",',\n  'dates_mentioned must be [],',\n  'importance must be \"low\".'\n].join(' ');\n\n\n// ---------------------------------------------------------\n// PAGE TEXT\n// ---------------------------------------------------------\n\nconst changedText =\n  ctx.changed_text ||\n  '(no added text; content was only removed or reordered)';\n\nconst currentPageText =\n  String(ctx.content_text || '')\n    .slice(0, 18000) ||\n  '(current page text unavailable)';\n\n\n// ---------------------------------------------------------\n// USER PROMPT\n// ---------------------------------------------------------\n\nconst user =\n  'SOURCE URL:\\n' +\n  ctx.page_url +\n\n  '\\n\\n====================\\n' +\n  'CHANGED VISIBLE TEXT:\\n' +\n  '====================\\n' +\n  changedText +\n\n  '\\n\\n====================\\n' +\n  'CURRENT PAGE TEXT:\\n' +\n  '====================\\n' +\n  currentPageText +\n\n  '\\n\\n====================\\n' +\n  'FINAL INSTRUCTIONS:\\n' +\n  '====================\\n' +\n\n  '\\nUse the CHANGED VISIBLE TEXT to determine what actually changed.' +\n  '\\nUse the CURRENT PAGE TEXT to understand the surrounding page context and find relevant dates that describe the changed information.' +\n\n  '\\n\\nCRITICAL DATE VALIDATION:' +\n  '\\n- \"Erken kayıt dönemi başladı\" is NOT a date.' +\n  '\\n- \"Başvurular başladı\" is NOT a date.' +\n  '\\n- \"Online görüşme planla\" is NOT a date.' +\n  '\\n- \"Son tarih 1 Ekim\" contains the actual date \"1 Ekim\".' +\n  '\\n- If the page contains \"1 Ekim\" as an early-registration deadline, preserve \"1 Ekim\" but do NOT call it the program start date.' +\n  '\\n- If there is no actual date, return null for the corresponding date field.' +\n  '\\n- dates_mentioned must contain only actual dates.' +\n\n  '\\n\\nDo not guess missing dates.' +\n  '\\nDo not put explanatory text into date fields.' +\n  '\\nReturn ONLY the required JSON object.';\n\n\n// ---------------------------------------------------------\n// OUTPUT\n// ---------------------------------------------------------\n\nreturn {\n  json: {\n    model: 'nvidia/nemotron-3.5-lightning-30b-a3b',\n\n    temperature: 0,\n\n    max_tokens: 700,\n\n    response_format: {\n      type: 'json_object'\n    },\n\n    chat_template_kwargs: {\n      enable_thinking: false\n    },\n\n    page_url: ctx.page_url,\n\n    checked_at: ctx.checked_at,\n\n    changed_text: ctx.changed_text,\n\n    messages: [\n      {\n        role: 'system',\n        content: system\n      },\n      {\n        role: 'user',\n        content: user\n      }\n    ]\n  }\n};"
+      },
+      "id": "4cad43a6-12cd-480d-a722-dc11266b2b75",
+      "name": "Prepare AI Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -880,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://integrate.api.nvidia.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  model: $json.model,\n  temperature: 0,\n  max_tokens: 700,\n  response_format: { type: \"json_object\" },\n  chat_template_kwargs: {\n    enable_thinking: false\n  },\n  messages: $json.messages\n}) }}",
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "id": "6c3b331f-ff88-4309-b73f-3d1be2cff231",
+      "name": "AI Analysis",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        -704,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const ctx = $json;\n\nconst rawContent = ctx?.choices?.[0]?.message?.content ?? '';\n\nlet parsed = {};\n\ntry {\n  let text = String(rawContent).trim();\n\n  // Markdown JSON fence varsa temizle\n  text = text.replace(/^```json\\s*/i, '').replace(/^```\\s*/i, '');\n  text = text.replace(/\\s*```$/i, '');\n\n  parsed = JSON.parse(text);\n} catch (error) {\n  parsed = {};\n}\n\nconst confidenceValues = ['high', 'medium', 'low'];\nconst eventTypes = [\n  'application_open',\n  'application_deadline',\n  'application_status',\n  'program_dates',\n  'ds2019',\n  'visa',\n  'eligibility',\n  'sponsor',\n  'fee_change',\n  'job_placement',\n  'policy_change',\n  'announcement',\n  'other'\n];\nconst applicationStatuses = ['open', 'upcoming', 'closed', 'unknown'];\nconst seasons = ['2027', '2026-2027', '2026', 'unknown'];\nconst importanceValues = ['high', 'medium', 'low'];\n\nreturn {\n  json: {\n    relevant: parsed.relevant === true,\n\n    season: seasons.includes(parsed.season)\n      ? parsed.season\n      : 'unknown',\n\n    confidence: confidenceValues.includes(parsed.confidence)\n      ? parsed.confidence\n      : 'low',\n\n    company:\n      typeof parsed.company === 'string'\n        ? parsed.company\n        : '',\n\n    event_type: eventTypes.includes(parsed.event_type)\n      ? parsed.event_type\n      : 'other',\n\n    application_status:\n      applicationStatuses.includes(parsed.application_status)\n        ? parsed.application_status\n        : 'unknown',\n\n    application_start:\n      parsed.application_start ?? null,\n\n    application_deadline:\n      parsed.application_deadline ?? null,\n\n    program_start:\n      parsed.program_start ?? null,\n\n    program_end:\n      parsed.program_end ?? null,\n\n    title:\n      typeof parsed.title === 'string'\n        ? parsed.title\n        : '',\n\n    summary:\n      typeof parsed.summary === 'string'\n        ? parsed.summary\n        : '',\n\n    dates_mentioned:\n      Array.isArray(parsed.dates_mentioned)\n        ? parsed.dates_mentioned\n        : [],\n\n    source_url:\n      typeof parsed.source_url === 'string' && parsed.source_url\n        ? parsed.source_url\n        : (ctx.page_url || ''),\n\n    importance: importanceValues.includes(parsed.importance)\n      ? parsed.importance\n      : 'low',\n\n    page_url: ctx.page_url || '',\n    checked_at: ctx.checked_at || new Date().toISOString(),\n  }\n};"
+      },
+      "id": "b503c466-48bb-4e46-9ddf-39dbdd83e509",
+      "name": "Parse Analysis",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -480,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "relevant",
+              "leftValue": "={{ $json.relevant }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "f239d3f2-d64c-43b9-85cf-d8432d4b8d8d",
+      "name": "Is Relevant?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -256,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "YOUR_EMAIL@example.com",
+        "subject": "=[WAT 2027 - {{ $json.importance }}] {{ $json.company || 'Genel' }} - {{ $json.title || 'Yeni Güncelleme' }}",
+        "message": "=<h2>🔔 WAT 2027 Güncellemesi</h2>\n\n<p>\n  <b>Şirket / Kurum:</b>\n  {{ $json.company || 'Belirtilmemiş' }}\n</p>\n\n<p>\n  <b>Başlık:</b>\n  {{ $json.title || 'Yeni WAT değişikliği' }}\n</p>\n\n<p>\n  <b>Özet:</b>\n  {{ $json.summary || 'Özet bulunamadı.' }}\n</p>\n\n<p>\n  <b>Sezon:</b>\n  {{ $json.season || 'unknown' }}\n</p>\n\n<p>\n  <b>Önem:</b>\n  {{ $json.importance || 'low' }}\n</p>\n\n<p>\n  <b>Etkinlik:</b>\n  {{ $json.event_type || 'other' }}\n</p>\n\n<p>\n  <b>Başvuru durumu:</b>\n  {{ $json.application_status || 'unknown' }}\n</p>\n\n<p>\n  <b>Başvuru başlangıcı:</b>\n  {{ $json.application_start || 'Belirtilmemiş' }}\n</p>\n\n<p>\n  <b>Başvuru son tarihi:</b>\n  {{ $json.application_deadline || 'Belirtilmemiş' }}\n</p>\n\n<p>\n  <b>Program başlangıcı:</b>\n  {{ $json.program_start || 'Belirtilmemiş' }}\n</p>\n\n<p>\n  <b>Program bitişi:</b>\n  {{ $json.program_end || 'Belirtilmemiş' }}\n</p>\n\n<p>\n  <b>Tespit edilen tarihler:</b>\n  {{\n    Array.isArray($json.dates_mentioned)\n      ? ($json.dates_mentioned.join(', ') || 'Yok')\n      : 'Yok'\n  }}\n</p>\n\n<p>\n  <b>Kaynak:</b>\n  <a href=\"{{ $json.source_url || $json.page_url }}\">\n    Sayfayı aç\n  </a>\n</p>\n\n<hr>\n\n<p style=\"font-size:12px;color:#666;\">\n  Bu bildirim Web Page Change Monitor tarafından oluşturuldu.\n</p>",
+        "options": {}
+      },
+      "id": "76daabda-c766-4585-bd01-179e50946312",
+      "name": "Send Change Alert",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -880,
+        16
+      ],
+      "id": "fd5a8163-bca7-47c5-b31d-ae034ed02c13",
+      "name": "Loop Over Items"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Every 6 Hours": {
+      "main": [
+        [
+          {
+            "node": "Get Stored Hashes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Stored Hashes": {
+      "main": [
+        [
+          {
+            "node": "Prepare URLs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare URLs": {
+      "main": [
+        [
+          {
+            "node": "Fetch Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Page": {
+      "main": [
+        [
+          {
+            "node": "Extract & Compare",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract & Compare": {
+      "main": [
+        [
+          {
+            "node": "Save Hash",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Hash": {
+      "main": [
+        [
+          {
+            "node": "Changed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Changed?": {
+      "main": [
+        [
+          {
+            "node": "Prepare AI Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare AI Request": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Analysis": {
+      "main": [
+        [
+          {
+            "node": "Parse Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Analysis": {
+      "main": [
+        [
+          {
+            "node": "Is Relevant?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Relevant?": {
+      "main": [
+        [
+          {
+            "node": "Send Change Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "AI Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Change Alert": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "nodeGroups": [
+    {
+      "id": "4102d7b1-c10d-40b5-8f83-14abbc269f20",
+      "name": "Fetch & fingerprint",
+      "nodeIds": [
+        "399df626-b0d1-4387-9030-e3c81c848206",
+        "1c57c0b6-0b7a-4e4d-9cef-28fdeaa87e99"
+      ],
+      "description": "Downloads each page, reduces it to visible text, and detects meaningful changes by diffing against the stored version"
+    },
+    {
+      "id": "9c2ade64-658e-4c78-b029-ef3ee1485fa2",
+      "name": "Record & gate changes",
+      "nodeIds": [
+        "3328f192-429d-4d41-a31f-1f348ef5056c",
+        "23d8e1eb-fcdc-4032-b103-60e7efabba13"
+      ],
+      "description": "Stores the new fingerprint and text for every page and forwards only pages whose visible content actually changed"
+    },
+    {
+      "id": "e1041e18-2b92-4e81-8641-2b7b9be2b894",
+      "name": "Analyze relevance",
+      "nodeIds": [
+        "4cad43a6-12cd-480d-a722-dc11266b2b75",
+        "6c3b331f-ff88-4309-b73f-3d1be2cff231",
+        "b503c466-48bb-4e46-9ddf-39dbdd83e509",
+        "f239d3f2-d64c-43b9-85cf-d8432d4b8d8d",
+        "fd5a8163-bca7-47c5-b31d-ae034ed02c13",
+        "76daabda-c766-4585-bd01-179e50946312"
+      ],
+      "description": "Asks an OpenAI-compatible model whether the changed text matters for the 2027 Summer Work Travel program, keeping only relevant changes"
+    }
+  ]
+}
