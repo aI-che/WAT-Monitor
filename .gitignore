@@ -1,0 +1,19 @@
+# n8n local data
+n8n_data/
+.n8n/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Credentials / certificates
+credentials.json
+*.pem
+*.key
+*.p12
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
